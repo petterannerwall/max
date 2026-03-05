@@ -12,6 +12,7 @@ const configSchema = z.object({
   AUTHORIZED_USER_ID: z.string().min(1).optional(),
   API_PORT: z.string().optional(),
   COPILOT_MODEL: z.string().optional(),
+  WORKER_TIMEOUT: z.string().optional(),
 });
 
 const raw = configSchema.parse(process.env);
@@ -28,12 +29,22 @@ if (Number.isNaN(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
   throw new Error(`API_PORT must be 1-65535, got: "${raw.API_PORT}"`);
 }
 
+const DEFAULT_WORKER_TIMEOUT_MS = 600_000; // 10 minutes
+const parsedWorkerTimeout = raw.WORKER_TIMEOUT
+  ? Number(raw.WORKER_TIMEOUT)
+  : DEFAULT_WORKER_TIMEOUT_MS;
+
+if (!Number.isInteger(parsedWorkerTimeout) || parsedWorkerTimeout <= 0) {
+  throw new Error(`WORKER_TIMEOUT must be a positive integer (ms), got: "${raw.WORKER_TIMEOUT}"`);
+}
+
 let _copilotModel = raw.COPILOT_MODEL || "claude-sonnet-4.6";
 
 export const config = {
   telegramBotToken: raw.TELEGRAM_BOT_TOKEN,
   authorizedUserId: parsedUserId,
   apiPort: parsedPort,
+  workerTimeoutMs: parsedWorkerTimeout,
   get copilotModel(): string {
     return _copilotModel;
   },

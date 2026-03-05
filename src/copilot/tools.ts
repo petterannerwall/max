@@ -9,6 +9,22 @@ import { config, persistModel } from "../config.js";
 import { SESSIONS_DIR } from "../paths.js";
 import { getCurrentSourceChannel } from "./orchestrator.js";
 
+function isTimeoutError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /timeout|timed?\s*out/i.test(msg);
+}
+
+function formatWorkerError(workerName: string, startedAt: number, timeoutMs: number, err: unknown): string {
+  const elapsed = Math.round((Date.now() - startedAt) / 1000);
+  const limit = Math.round(timeoutMs / 1000);
+  const msg = err instanceof Error ? err.message : String(err);
+
+  if (isTimeoutError(err)) {
+    return `Worker '${workerName}' timed out after ${elapsed}s (limit: ${limit}s). The task was still running but had to be stopped. To allow more time, set WORKER_TIMEOUT=${timeoutMs * 2} in ~/.max/.env`;
+  }
+  return `Worker '${workerName}' failed after ${elapsed}s: ${msg}`;
+}
+
 const BLOCKED_WORKER_DIRS = [
   ".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud",
   ".kube", ".docker", ".npmrc", ".pypirc",
@@ -22,6 +38,8 @@ export interface WorkerInfo {
   workingDir: string;
   status: "idle" | "running" | "error";
   lastOutput?: string;
+  /** Timestamp (ms) when the worker started its current task. */
+  startedAt?: number;
   /** Channel that created this worker — completions route back here. */
   originChannel?: "telegram" | "tui";
 }
@@ -88,20 +106,22 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 
         if (args.initial_prompt) {
           worker.status = "running";
+          worker.startedAt = Date.now();
           db.prepare(
             `UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`
           ).run(args.name);
 
+          const timeoutMs = config.workerTimeoutMs;
           // Non-blocking: dispatch work and return immediately
           session.sendAndWait({
             prompt: `Working directory: ${args.working_dir}\n\n${args.initial_prompt}`,
-          }, 300_000).then((result) => {
+          }, timeoutMs).then((result) => {
             worker.lastOutput = result?.data?.content || "No response";
             deps.onWorkerComplete(args.name, worker.lastOutput);
           }).catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            worker.lastOutput = msg;
-            deps.onWorkerComplete(args.name, `Error: ${msg}`);
+            const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
+            worker.lastOutput = errMsg;
+            deps.onWorkerComplete(args.name, errMsg);
           }).finally(() => {
             // Auto-destroy background workers after completion to free memory (~400MB per worker)
             session.destroy().catch(() => {});
@@ -134,19 +154,21 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
         }
 
         worker.status = "running";
+        worker.startedAt = Date.now();
         const db = getDb();
         db.prepare(`UPDATE worker_sessions SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE name = ?`).run(
           args.name
         );
 
+        const timeoutMs = config.workerTimeoutMs;
         // Non-blocking: dispatch work and return immediately
-        worker.session.sendAndWait({ prompt: args.prompt }, 300_000).then((result) => {
+        worker.session.sendAndWait({ prompt: args.prompt }, timeoutMs).then((result) => {
           worker.lastOutput = result?.data?.content || "No response";
           deps.onWorkerComplete(args.name, worker.lastOutput);
         }).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          worker.lastOutput = msg;
-          deps.onWorkerComplete(args.name, `Error: ${msg}`);
+          const errMsg = formatWorkerError(args.name, worker.startedAt!, timeoutMs, err);
+          worker.lastOutput = errMsg;
+          deps.onWorkerComplete(args.name, errMsg);
         }).finally(() => {
           // Auto-destroy after each send_to_worker dispatch to free memory
           worker.session.destroy().catch(() => {});
