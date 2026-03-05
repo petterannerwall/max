@@ -2,7 +2,7 @@ import * as readline from "readline";
 import * as http from "http";
 import { exec, execFile } from "child_process";
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from "fs";
-import { HISTORY_PATH, API_TOKEN_PATH, ensureMaxHome } from "../paths.js";
+import { HISTORY_PATH, API_TOKEN_PATH, TUI_DEBUG_LOG_PATH, ensureMaxHome } from "../paths.js";
 
 const API_BASE = process.env.MAX_API_URL || "http://127.0.0.1:7777";
 
@@ -39,6 +39,33 @@ const C = {
 // ── Layout constants ─────────────────────────────────────
 const LABEL_PAD = "          "; // 10-char indent for continuation lines
 const MAX_LABEL = `  ${C.cyan("MAX")}     `;
+const TUI_DEBUG_ENABLED = /^(1|true|yes|on)$/i.test((process.env.MAX_TUI_DEBUG || "").trim());
+let debugWriteFailureReported = false;
+
+function previewForDebug(text: string, max = 120): string {
+  return text
+    .slice(0, max)
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}
+
+function debugLog(event: string, data: Record<string, unknown> = {}): void {
+  if (!TUI_DEBUG_ENABLED) return;
+  const entry = {
+    ts: new Date().toISOString(),
+    event,
+    ...data,
+  };
+  try {
+    appendFileSync(TUI_DEBUG_LOG_PATH, JSON.stringify(entry) + "\n");
+  } catch (err) {
+    if (debugWriteFailureReported) return;
+    debugWriteFailureReported = true;
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`\n[max] failed to write TUI debug log: ${msg}\n`);
+  }
+}
 
 // ── Markdown → ANSI rendering ────────────────────────────
 
@@ -106,13 +133,22 @@ function streamPrefix(): string {
 
 function stripLeadingStreamNewlines(text: string): string {
   if (!streamIsFirstLine || streamLineBuffer.length > 0) return text;
-  return text.replace(/^(?:\r?\n)+/, "");
+  const stripped = text.replace(/^(?:\r?\n)+/, "");
+  if (stripped.length !== text.length) {
+    debugLog("stream-strip-leading-newlines", {
+      requestId: activeRequestId,
+      removedChars: text.length - stripped.length,
+      originalPreview: previewForDebug(text),
+    });
+  }
+  return stripped;
 }
 
 /** Clear the current visual line (handles terminal wrapping). */
 function clearVisualLine(charCount: number): void {
   const cols = process.stdout.columns || 80;
   const up = Math.ceil(Math.max(charCount, 1) / cols) - 1;
+  debugLog("clear-visual-line", { requestId: activeRequestId, charCount, cols, up });
   if (up > 0) process.stdout.write(`\x1b[${up}A`);
   process.stdout.write(`\r\x1b[J`);
 }
@@ -138,6 +174,12 @@ function writeRenderedStreamLine(line: string): void {
 
 /** Process a chunk of streaming text, rendering complete lines with labels. */
 function writeStreamChunk(newText: string): void {
+  debugLog("stream-chunk", {
+    requestId: activeRequestId,
+    length: newText.length,
+    preview: previewForDebug(newText),
+    startsWithNewline: /^(?:\r?\n)/.test(newText),
+  });
   let pos = 0;
   while (pos < newText.length) {
     const nl = newText.indexOf("\n", pos);
@@ -194,17 +236,29 @@ let thinkingVisible = false;
 const thinkingFrames = ["Thinking", "Thinking.", "Thinking..", "Thinking..."];
 
 function startThinking(): void {
-  stopThinking();
+  stopThinking("restart-thinking");
   thinkingFrame = 0;
   thinkingVisible = true;
   process.stdout.write(`${MAX_LABEL}${C.dim(thinkingFrames[0])}`);
+  debugLog("thinking-start", {
+    requestId: activeRequestId,
+    frame: thinkingFrames[0],
+    msSinceSubmit: activeRequestStartedAt > 0 ? Date.now() - activeRequestStartedAt : null,
+  });
   thinkingTimer = setInterval(() => {
     thinkingFrame = (thinkingFrame + 1) % thinkingFrames.length;
     process.stdout.write(`\r\x1b[K${MAX_LABEL}${C.dim(thinkingFrames[thinkingFrame])}`);
+    debugLog("thinking-tick", {
+      requestId: activeRequestId,
+      frameIndex: thinkingFrame,
+      frame: thinkingFrames[thinkingFrame],
+    });
   }, 400);
 }
 
-function stopThinking(): void {
+function stopThinking(reason = "unspecified"): void {
+  const hadTimer = Boolean(thinkingTimer);
+  const wasVisible = thinkingVisible;
   if (thinkingTimer) {
     clearInterval(thinkingTimer);
     thinkingTimer = undefined;
@@ -213,6 +267,12 @@ function stopThinking(): void {
     process.stdout.write(`\r\x1b[K`);
     thinkingVisible = false;
   }
+  debugLog("thinking-stop", {
+    requestId: activeRequestId,
+    reason,
+    hadTimer,
+    wasVisible,
+  });
 }
 
 // ── State ─────────────────────────────────────────────────
@@ -220,6 +280,8 @@ let connectionId: string | undefined;
 let isStreaming = false;
 let streamedContent = "";
 let lastResponse = "";
+let activeRequestId = 0;
+let activeRequestStartedAt = 0;
 
 // ── Persistent history ────────────────────────────────────
 const MAX_HISTORY = 1000;
@@ -254,6 +316,14 @@ function trimHistoryFile(): void {
 
 // ── Readline setup ────────────────────────────────────────
 ensureMaxHome();
+debugLog("session-start", {
+  pid: process.pid,
+  cwd: process.cwd(),
+  stdinIsTTY: Boolean(process.stdin.isTTY),
+  stdoutIsTTY: Boolean(process.stdout.isTTY),
+  columns: process.stdout.columns || null,
+  logPath: TUI_DEBUG_LOG_PATH,
+});
 const history = loadHistory();
 
 const rl = readline.createInterface({
@@ -323,30 +393,52 @@ function connectSSE(): void {
 
             if (event.type === "connected") {
               connectionId = event.connectionId;
+              debugLog("sse-connected", { connectionId });
             } else if (event.type === "delta") {
+              const full = event.content || "";
+              const baseLength = isStreaming ? streamedContent.length : 0;
               if (!isStreaming) {
-                stopThinking();
+                stopThinking("first-delta");
                 isStreaming = true;
                 streamedContent = "";
                 streamLineBuffer = "";
                 inStreamCodeBlock = false;
                 streamIsFirstLine = true;
+                debugLog("stream-first-delta", {
+                  requestId: activeRequestId,
+                  msSinceSubmit: activeRequestStartedAt > 0 ? Date.now() - activeRequestStartedAt : null,
+                  fullLength: full.length,
+                  newLength: full.length,
+                  startsWithNewline: /^(?:\r?\n)/.test(full),
+                });
               }
               // Content is cumulative — only print the new part
-              const full = event.content || "";
-              const newText = full.slice(streamedContent.length);
+              const newText = full.slice(baseLength);
               if (newText) {
-                writeStreamChunk(stripLeadingStreamNewlines(newText));
+                const normalized = stripLeadingStreamNewlines(newText);
+                debugLog("stream-delta", {
+                  requestId: activeRequestId,
+                  fullLength: full.length,
+                  rawLength: newText.length,
+                  normalizedLength: normalized.length,
+                  preview: previewForDebug(normalized),
+                });
+                if (normalized) writeStreamChunk(normalized);
                 streamedContent = full;
               }
             } else if (event.type === "cancelled") {
-              stopThinking();
+              stopThinking("cancelled-event");
               isStreaming = false;
               streamedContent = "";
               streamLineBuffer = "";
               inStreamCodeBlock = false;
               streamIsFirstLine = true;
             } else if (event.type === "message") {
+              debugLog("stream-message", {
+                requestId: activeRequestId,
+                isStreaming,
+                contentLength: typeof event.content === "string" ? event.content.length : 0,
+              });
               if (isStreaming) {
                 // Streaming is done — flush remaining and re-prompt
                 flushStreamState();
@@ -356,16 +448,21 @@ function connectSSE(): void {
                 process.stdout.write("\n\n");
               } else {
                 // Proactive/background message — render with label
-                stopThinking();
+                stopThinking("message-event");
                 lastResponse = event.content;
                 const rendered = renderMarkdown(event.content);
                 process.stdout.write("\n");
                 writeLabeled("max", rendered);
                 process.stdout.write("\n");
               }
+              activeRequestStartedAt = 0;
               rl.prompt();
             }
-          } catch {
+          } catch (err) {
+            debugLog("sse-event-parse-error", {
+              linePreview: previewForDebug(line),
+              error: err instanceof Error ? err.message : String(err),
+            });
             // Malformed event, ignore
           }
         }
@@ -373,19 +470,24 @@ function connectSSE(): void {
     });
 
     res.on("end", () => {
-      stopThinking();
+      stopThinking("sse-end");
+      debugLog("sse-end");
       console.log(C.yellow("\n    ⚠ disconnected — reconnecting..."));
       isStreaming = false;
+      streamedContent = "";
       setTimeout(connectSSE, 2000);
     });
 
     res.on("error", (err) => {
-      stopThinking();
+      stopThinking("sse-error");
+      debugLog("sse-error", { error: err.message });
       console.error(C.red(`\n    ✗ connection error — retrying...`));
       isStreaming = false;
+      streamedContent = "";
       setTimeout(connectSSE, 3000);
     });
   }).on("error", (err) => {
+    debugLog("sse-connect-error", { error: err.message });
     console.error(C.red(`    ✗ cannot connect to daemon`));
     console.error(C.dim("      start with: max start"));
     setTimeout(connectSSE, 5000);
@@ -393,9 +495,14 @@ function connectSSE(): void {
 }
 
 // ── API helpers ───────────────────────────────────────────
-function sendMessage(prompt: string): void {
+function sendMessage(prompt: string, requestId: number): void {
   const body = JSON.stringify({ prompt, connectionId });
   const url = new URL("/message", API_BASE);
+  debugLog("message-send-start", {
+    requestId,
+    promptLength: prompt.length,
+    connectionId: connectionId || null,
+  });
 
   const req = http.request(
     url,
@@ -411,8 +518,14 @@ function sendMessage(prompt: string): void {
       let data = "";
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
+        debugLog("message-send-end", {
+          requestId,
+          statusCode: res.statusCode || null,
+          responseLength: data.length,
+          responsePreview: previewForDebug(data),
+        });
         if (res.statusCode !== 200) {
-          stopThinking();
+          stopThinking("message-post-error");
           console.error(C.red(`  Error: ${data}`));
           rl.prompt();
         }
@@ -421,13 +534,15 @@ function sendMessage(prompt: string): void {
   );
 
   req.on("error", (err) => {
-    stopThinking();
+    stopThinking("message-request-error");
+    debugLog("message-send-error", { requestId, error: err.message });
     console.error(C.red(`  Failed to send: ${err.message}`));
     rl.prompt();
   });
 
   req.write(body);
   req.end();
+  debugLog("message-send-dispatched", { requestId, byteLength: Buffer.byteLength(body) });
 }
 
 /** Silent GET — no re-prompt (used for startup info) */
@@ -503,7 +618,8 @@ function apiDelete(path: string, cb: (data: any) => void): void {
 }
 
 function sendCancel(): void {
-  stopThinking();
+  stopThinking("user-cancel");
+  debugLog("cancel-send", { requestId: activeRequestId, isStreaming });
   const url = new URL("/cancel", API_BASE);
   const req = http.request(url, { method: "POST", headers: authHeaders() }, (res) => {
     let data = "";
@@ -649,6 +765,7 @@ function cmdHelp(): void {
   console.log(`    ${C.coral("/quit")}                 exit`);
   console.log();
   console.log(C.dim("    press escape to cancel a running response"));
+  console.log(C.dim("    set MAX_TUI_DEBUG=1 to write lifecycle logs to ~/.max/tui-debug.log"));
   console.log();
 }
 
@@ -673,9 +790,15 @@ setTimeout(() => {
   rl.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) {
+      debugLog("input-empty-line");
       rl.prompt();
       return;
     }
+    debugLog("input-line", {
+      length: trimmed.length,
+      isCommand: trimmed.startsWith("/"),
+      preview: previewForDebug(trimmed),
+    });
 
     // Save to persistent history (skip commands)
     if (!trimmed.startsWith("/")) {
@@ -707,6 +830,11 @@ setTimeout(() => {
       } else {
         console.log(label + trimmed);
       }
+      debugLog("input-rendered-you-label", {
+        columns: cols,
+        wrappedLines,
+        contentWidth,
+      });
     }
 
     if (trimmed === "/quit" || trimmed === "/exit") {
@@ -775,8 +903,15 @@ setTimeout(() => {
     }
 
     // Send to orchestrator
-    sendMessage(trimmed);
+    activeRequestId += 1;
+    activeRequestStartedAt = Date.now();
+    debugLog("request-dispatch", {
+      requestId: activeRequestId,
+      inputLength: trimmed.length,
+      columns: process.stdout.columns || null,
+    });
     startThinking();
+    sendMessage(trimmed, activeRequestId);
   });
 
   rl.on("close", () => {

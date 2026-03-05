@@ -20,6 +20,9 @@ export const SESSIONS_DIR = join(MAX_HOME, "sessions");
 /** Path to TUI readline history */
 export const HISTORY_PATH = join(MAX_HOME, "tui_history");
 
+/** Path to optional TUI debug log */
+export const TUI_DEBUG_LOG_PATH = join(MAX_HOME, "tui-debug.log");
+
 /** Path to the API bearer token file */
 export const API_TOKEN_PATH = join(MAX_HOME, "api-token");
 
