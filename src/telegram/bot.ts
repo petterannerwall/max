@@ -1,6 +1,6 @@
 import { Bot, type Context } from "grammy";
 import { config, persistModel } from "../config.js";
-import { sendToOrchestrator, cancelCurrentMessage, getWorkers } from "../copilot/orchestrator.js";
+import { sendToOrchestrator, cancelCurrentMessage, getWorkers, getLastRouteResult } from "../copilot/orchestrator.js";
 import { chunkMessage, toTelegramMarkdown } from "./formatter.js";
 import { searchMemories } from "../store/db.js";
 import { listSkills } from "../copilot/skills.js";
@@ -141,9 +141,19 @@ export function createBot(): Bot {
           stopTyping();
           // Send final message — use chunking for long responses, reply-quote original
           void (async () => {
-            const formatted = toTelegramMarkdown(text);
+            // Append model indicator if router metadata is available
+            const routeResult = getLastRouteResult();
+            let indicatorSuffix = "";
+            if (routeResult) {
+              const icon = routeResult.routerMode === "auto" ? "⚡" : "📌";
+              indicatorSuffix = `\n\n_${icon} ${routeResult.routerMode} · ${routeResult.model}_`;
+            }
+            const formatted = toTelegramMarkdown(text) + indicatorSuffix;
             const chunks = chunkMessage(formatted);
-            const fallbackChunks = chunkMessage(text);
+            const fallbackText = routeResult
+              ? text + `\n\n${routeResult.routerMode === "auto" ? "⚡" : "📌"} ${routeResult.routerMode} · ${routeResult.model}`
+              : text;
+            const fallbackChunks = chunkMessage(fallbackText);
             const sendChunk = async (chunk: string, fallback: string, isFirst: boolean) => {
               const opts = isFirst
                 ? { parse_mode: "MarkdownV2" as const, reply_parameters: replyParams }
