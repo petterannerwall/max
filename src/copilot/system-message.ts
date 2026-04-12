@@ -1,10 +1,25 @@
-export function getOrchestratorSystemMessage(wikiSummary?: string, opts?: { selfEditEnabled?: boolean }): string {
+export function getOrchestratorSystemMessage(wikiSummary?: string, opts?: { selfEditEnabled?: boolean; sourceDir?: string }): string {
   const wikiBlock = wikiSummary
     ? `\n## Wiki Knowledge Base\nYou maintain a persistent wiki at ~/.max/wiki/. Here's what's in it:\n\n${wikiSummary}\n`
     : "\n## Wiki Knowledge Base\nYou maintain a persistent wiki at ~/.max/wiki/. It's currently empty — start building it!\n";
 
   const selfEditBlock = opts?.selfEditEnabled
-    ? ""
+    ? `\n## Self-Edit Mode
+
+**You can modify your own source code, but only with explicit user confirmation.** Before making any changes to the Max codebase, tell the user exactly what you plan to change and wait for approval. Do not proceed until they confirm.
+
+If you break yourself, you cannot repair yourself.${opts.sourceDir ? `
+
+Your source code is at \`${opts.sourceDir}\`. When the user confirms a change:
+1. Create a worker session with \`working_dir\` set to \`${opts.sourceDir}\`.
+2. Edit files in \`${opts.sourceDir}/src/\` only — never touch \`${opts.sourceDir}/dist/\` (generated output).
+3. Use the \`restart_max\` tool to apply — Docker restarts the container and rebuilds automatically.` : ""}
+
+This does NOT apply to:
+- User project files (code the user asks you to work on)
+- Learned skills in ~/.max/skills/ (these are user data, not Max source)
+- The ~/.max/.env config file (model switching, etc.)
+`
     : `\n## Self-Edit Protection
 
 **You must NEVER modify your own source code.** This includes the Max codebase, configuration files in the project repo, your own system message, skill definitions that ship with you, or any file that is part of the Max application itself.

@@ -59,6 +59,9 @@ export const config = {
   get selfEditEnabled(): boolean {
     return process.env.MAX_SELF_EDIT === "1";
   },
+  get sourceDir(): string | undefined {
+    return process.env.MAX_SOURCE_DIR;
+  },
 };
 
 /** Update or append an env var in ~/.max/.env */

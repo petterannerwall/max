@@ -166,6 +166,14 @@ export async function restartDaemon(): Promise<void> {
   try { await stopClient(); } catch { /* best effort */ }
   closeDb();
 
+  // In a container (supervised by Docker), just exit — the supervisor will restart us,
+  // running start-max.sh from scratch (including npm run build). Spawning a detached
+  // child in this environment causes two processes to run simultaneously.
+  if (process.env.MAX_SOURCE_DIR) {
+    console.log("[max] Container mode — exiting for supervisor restart.");
+    process.exit(0);
+  }
+
   // Spawn a detached replacement process with the same args (include execArgv for tsx/loaders)
   const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
     detached: true,
