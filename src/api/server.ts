@@ -1,5 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
+import { rateLimit } from "express-rate-limit";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { randomBytes } from "crypto";
 import { sendToOrchestrator, getWorkers, cancelCurrentMessage, getLastRouteResult } from "../copilot/orchestrator.js";
@@ -27,7 +28,11 @@ try {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "16kb" }));
+
+// 60 requests per minute per IP — generous for a personal API, prevents abuse
+const limiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false });
+app.use(limiter);
 
 // Bearer token authentication middleware (skip /status health check)
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -281,8 +286,8 @@ app.post("/send-photo", async (req: Request, res: Response) => {
 
 export function startApiServer(): Promise<void> {
   return new Promise((resolve, reject) => {
-    const server = app.listen(config.apiPort, "127.0.0.1", () => {
-      console.log(`[max] HTTP API listening on http://127.0.0.1:${config.apiPort}`);
+    const server = app.listen(config.apiPort, "0.0.0.0", () => {
+      console.log(`[max] HTTP API listening on http://0.0.0.0:${config.apiPort}`);
       resolve();
     });
     server.on("error", (err: NodeJS.ErrnoException) => {
