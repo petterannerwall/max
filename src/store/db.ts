@@ -105,6 +105,17 @@ export function getDb(): Database.Database {
       // FTS5 not available in this SQLite build — fall back to LIKE queries
       fts5Available = false;
     }
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        cron TEXT NOT NULL,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        prompt TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   }
   return db;
 }
@@ -434,6 +445,52 @@ export function runMemoryMaintenance(): { deduped: number; pruned: number; cappe
   const pruned = pruneStaleMemories();
   const capped = capAutoMemories();
   return { deduped, pruned, capped };
+}
+
+export interface ScheduledTask {
+  id: number;
+  name: string;
+  cron: string;
+  timezone: string;
+  prompt: string;
+  enabled: number;
+  created_at: string;
+}
+
+export function addScheduledTask(name: string, cron: string, timezone: string, prompt: string): number {
+  const db = getDb();
+  const result = db.prepare(
+    `INSERT INTO scheduled_tasks (name, cron, timezone, prompt) VALUES (?, ?, ?, ?)`
+  ).run(name, cron, timezone, prompt);
+  return result.lastInsertRowid as number;
+}
+
+export function listScheduledTasks(): ScheduledTask[] {
+  const db = getDb();
+  return db.prepare(`SELECT * FROM scheduled_tasks ORDER BY id ASC`).all() as ScheduledTask[];
+}
+
+export function getScheduledTask(id: number): ScheduledTask | undefined {
+  const db = getDb();
+  return db.prepare(`SELECT * FROM scheduled_tasks WHERE id = ?`).get(id) as ScheduledTask | undefined;
+}
+
+export function removeScheduledTask(id: number): boolean {
+  const db = getDb();
+  const result = db.prepare(`DELETE FROM scheduled_tasks WHERE id = ?`).run(id);
+  return result.changes > 0;
+}
+
+export function updateScheduledTask(
+  id: number,
+  fields: Partial<{ name: string; cron: string; timezone: string; prompt: string; enabled: number }>
+): boolean {
+  const db = getDb();
+  const setClauses = Object.keys(fields).map((k) => `${k} = ?`).join(", ");
+  if (!setClauses) return false;
+  const values = [...Object.values(fields), id];
+  const result = db.prepare(`UPDATE scheduled_tasks SET ${setClauses} WHERE id = ?`).run(...values);
+  return result.changes > 0;
 }
 
 export function closeDb(): void {

@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import { checkForUpdate } from "./update.js";
 import { ensureWikiStructure } from "./wiki/fs.js";
 import { shouldMigrate, migrateMemoriesToWiki } from "./wiki/migrate.js";
+import { startScheduler } from "./scheduler.js";
 
 function truncate(text: string, max = 200): string {
   const oneLine = text.replace(/\n/g, " ").trim();
@@ -52,7 +53,10 @@ async function main(): Promise<void> {
   await initOrchestrator(client);
   console.log("[max] Orchestrator session ready");
 
-  // Wire up proactive notifications — route to the originating channel
+  startScheduler();
+  console.log("[max] Scheduler started");
+
+  // Wire up proactive notifications— route to the originating channel
   setProactiveNotify((text, channel) => {
     console.log(`[max] bg-notify (${channel ?? "all"}) ⟵  ${truncate(text)}`);
     if (!channel || channel === "telegram") {

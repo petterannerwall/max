@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { approveAll, defineTool, type CopilotClient, type CopilotSession, type Tool } from "@github/copilot-sdk";
-import { getDb, addMemory, searchMemories, removeMemory } from "../store/db.js";
+import { getDb, addMemory, searchMemories, removeMemory, addScheduledTask, listScheduledTasks, removeScheduledTask, updateScheduledTask, getScheduledTask } from "../store/db.js";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, sep, resolve } from "path";
 import { homedir } from "os";
@@ -12,6 +12,8 @@ import { getRouterConfig, updateRouterConfig } from "./router.js";
 import { ensureWikiStructure, readPage, writePage, deletePage, listPages, writeRawSource, listSources, getWikiDir } from "../wiki/fs.js";
 import { searchIndex, addToIndex, removeFromIndex, parseIndex, type IndexEntry } from "../wiki/index-manager.js";
 import { appendLog } from "../wiki/log-manager.js";
+import * as schedule from "node-schedule";
+import { reloadScheduler, getNextRunTime } from "../scheduler.js";
 
 function isTimeoutError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -27,6 +29,17 @@ function formatWorkerError(workerName: string, startedAt: number, timeoutMs: num
     return `Worker '${workerName}' timed out after ${elapsed}s (limit: ${limit}s). The task was still running but had to be stopped. To allow more time, set WORKER_TIMEOUT=${timeoutMs * 2} in ~/.max/.env`;
   }
   return `Worker '${workerName}' failed after ${elapsed}s: ${msg}`;
+}
+
+function isValidCron(cron: string, tz: string): boolean {
+  try {
+    const job = schedule.scheduleJob({ rule: cron, tz }, () => {});
+    if (!job) return false;
+    job.cancel();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const BLOCKED_WORKER_DIRS = [
@@ -805,6 +818,92 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
 
         appendLog("lint", `${orphans.length} orphans, ${missing.length} missing`);
         return report.join("\n");
+      },
+    }),
+
+    defineTool("add_scheduled_task", {
+      description:
+        "Schedule a recurring task. The prompt will be sent to the orchestrator at the specified cron time in the given timezone.",
+      parameters: z.object({
+        name: z.string().describe("Short unique label, e.g. 'morning-weather'"),
+        cron: z.string().describe("5-field cron expression, e.g. '0 7 * * *' for 07:00 daily"),
+        timezone: z.string().default("Europe/Stockholm").describe("IANA timezone, e.g. 'Europe/Stockholm'"),
+        prompt: z.string().describe("The message to send to the orchestrator when the task fires"),
+      }),
+      handler: async (args) => {
+        if (!isValidCron(args.cron, args.timezone))
+          return `Error: invalid cron expression "${args.cron}" or timezone "${args.timezone}"`;
+        let id: number;
+        try {
+          id = addScheduledTask(args.name, args.cron, args.timezone, args.prompt);
+        } catch {
+          return `Error: a task named "${args.name}" already exists`;
+        }
+        reloadScheduler();
+        const next = getNextRunTime(id);
+        return `Scheduled task created (id=${id}). Next run: ${next ? next.toISOString() : "unknown"}`;
+      },
+    }),
+
+    defineTool("list_scheduled_tasks", {
+      description: "List all scheduled tasks with their id, cron, timezone, enabled status, and next run time.",
+      parameters: z.object({}),
+      handler: async () => {
+        const tasks = listScheduledTasks();
+        if (tasks.length === 0) return "No scheduled tasks.";
+        return tasks.map((t) => {
+          const next = getNextRunTime(t.id);
+          const status = t.enabled ? "enabled" : "disabled";
+          return `[${t.id}] ${t.name} | ${t.cron} ${t.timezone} | ${status} | next: ${next ? next.toISOString() : "n/a"}\n  prompt: ${t.prompt.slice(0, 80)}${t.prompt.length > 80 ? "…" : ""}`;
+        }).join("\n\n");
+      },
+    }),
+
+    defineTool("remove_scheduled_task", {
+      description: "Remove a scheduled task by id.",
+      parameters: z.object({
+        id: z.number().describe("Task id from list_scheduled_tasks"),
+      }),
+      handler: async (args) => {
+        const task = getScheduledTask(args.id);
+        if (!task) return `No task found with id=${args.id}`;
+        removeScheduledTask(args.id);
+        reloadScheduler();
+        return `Task "${task.name}" (id=${args.id}) removed.`;
+      },
+    }),
+
+    defineTool("update_scheduled_task", {
+      description: "Update a scheduled task's cron, timezone, prompt, name, or enabled state.",
+      parameters: z.object({
+        id: z.number().describe("Task id"),
+        name: z.string().optional(),
+        cron: z.string().optional(),
+        timezone: z.string().optional(),
+        prompt: z.string().optional(),
+        enabled: z.boolean().optional(),
+      }),
+      handler: async (args) => {
+        const task = getScheduledTask(args.id);
+        if (!task) return `No task found with id=${args.id}`;
+        const cronToTest = args.cron ?? task.cron;
+        const tzToTest = args.timezone ?? task.timezone;
+        if ((args.cron !== undefined || args.timezone !== undefined) && !isValidCron(cronToTest, tzToTest))
+          return `Error: invalid cron expression "${cronToTest}" or timezone "${tzToTest}"`;
+        const fields: Record<string, string | number> = {};
+        if (args.name !== undefined) fields.name = args.name;
+        if (args.cron !== undefined) fields.cron = args.cron;
+        if (args.timezone !== undefined) fields.timezone = args.timezone;
+        if (args.prompt !== undefined) fields.prompt = args.prompt;
+        if (args.enabled !== undefined) fields.enabled = args.enabled ? 1 : 0;
+        try {
+          updateScheduledTask(args.id, fields);
+        } catch {
+          return `Error: a task named "${args.name}" already exists`;
+        }
+        reloadScheduler();
+        const next = getNextRunTime(args.id);
+        return `Task id=${args.id} updated. Next run: ${next ? next.toISOString() : "n/a (disabled or invalid)"}`;
       },
     }),
 
