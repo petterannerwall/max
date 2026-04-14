@@ -38,6 +38,10 @@ export function setProactiveNotify(fn: ProactiveNotifyFn): void {
   proactiveNotifyFn = fn;
 }
 
+export function proactiveNotify(text: string, channel?: "telegram" | "tui"): void {
+  proactiveNotifyFn?.(text, channel);
+}
+
 let copilotClient: CopilotClient | undefined;
 const workers = new Map<string, WorkerInfo>();
 let healthCheckTimer: ReturnType<typeof setInterval> | undefined;

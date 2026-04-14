@@ -1,6 +1,6 @@
 import * as schedule from "node-schedule";
 import { listScheduledTasks } from "./store/db.js";
-import { sendToOrchestrator } from "./copilot/orchestrator.js";
+import { sendToOrchestrator, proactiveNotify } from "./copilot/orchestrator.js";
 
 const activeJobs = new Map<number, schedule.Job>();
 
@@ -22,7 +22,9 @@ export function reloadScheduler(): void {
       const job = schedule.scheduleJob(
         { rule: task.cron, tz: task.timezone },
         () => {
-          sendToOrchestrator(task.prompt, { type: "background" }, () => {}).catch((err) => {
+          sendToOrchestrator(task.prompt, { type: "background" }, (_text, done) => {
+            if (done) proactiveNotify(_text, "telegram");
+          }).catch((err) => {
             console.error(`[scheduler] Task "${task.name}" (id=${task.id}) failed:`, err);
           });
         }
