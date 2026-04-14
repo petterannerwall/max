@@ -53,9 +53,6 @@ async function main(): Promise<void> {
   await initOrchestrator(client);
   console.log("[max] Orchestrator session ready");
 
-  startScheduler();
-  console.log("[max] Scheduler started");
-
   // Wire up proactive notifications— route to the originating channel
   setProactiveNotify((text, channel) => {
     console.log(`[max] bg-notify (${channel ?? "all"}) ⟵  ${truncate(text)}`);
@@ -66,6 +63,9 @@ async function main(): Promise<void> {
       broadcastToSSE(text);
     }
   });
+
+  startScheduler();
+  console.log("[max] Scheduler started");
 
   // Start HTTP API for TUI
   await startApiServer();

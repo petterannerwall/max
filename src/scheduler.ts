@@ -31,13 +31,15 @@ export function reloadScheduler(): void {
       );
       if (job) {
         activeJobs.set(task.id, job);
+        const next = job.nextInvocation();
+        console.log(`[max] scheduler "${task.name}" next run: ${next?.toLocaleString('sv-SE', { timeZone: 'Europe/Stockholm' })} Stockholm`);
       }
     } catch (err) {
-      console.error(`[scheduler] Failed to schedule task "${task.name}" (id=${task.id}):`, err);
+      console.error(`[max] scheduler failed to schedule "${task.name}" (id=${task.id}):`, err);
     }
   }
 
-  console.log(`[scheduler] ${activeJobs.size} task(s) scheduled`);
+  console.log(`[max] scheduler ${activeJobs.size} task(s) scheduled`);
 }
 
 export function getNextRunTime(taskId: number): Date | null {

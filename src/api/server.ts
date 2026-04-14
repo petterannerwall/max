@@ -8,9 +8,10 @@ import { sendToOrchestrator, getWorkers, cancelCurrentMessage, getLastRouteResul
 import { sendPhoto } from "../telegram/bot.js";
 import { config, persistModel } from "../config.js";
 import { getRouterConfig, updateRouterConfig } from "../copilot/router.js";
-import { searchMemories } from "../store/db.js";
+import { searchMemories, listScheduledTasks } from "../store/db.js";
 import { listSkills, removeSkill } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
+import { getNextRunTime } from "../scheduler.js";
 import { API_TOKEN_PATH, ensureMaxHome, WIKI_DIR } from "../paths.js";
 
 // Ensure token file exists (generate on first run)
@@ -68,10 +69,27 @@ app.get("/sessions", (_req: Request, res: Response) => {
     name: w.name,
     workingDir: w.workingDir,
     status: w.status,
-    lastOutput: w.lastOutput?.slice(0, 500),
+    lastOutput: w.lastOutput?.slice(-2000),
+    startedAt: w.startedAt ?? null,
+    originChannel: w.originChannel ?? null,
   }));
   res.json(workers);
 });
+
+// List scheduled tasks with next run times
+app.get("/scheduled-tasks", (_req: Request, res: Response) => {
+  try {
+    const tasks = listScheduledTasks();
+    const withNextRun = tasks.map((t) => ({
+      ...t,
+      nextRun: getNextRunTime(t.id),
+    }));
+    res.json(withNextRun);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 
 // SSE stream for real-time responses
 app.get("/stream", (req: Request, res: Response) => {
