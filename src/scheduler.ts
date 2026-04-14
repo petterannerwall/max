@@ -23,7 +23,7 @@ export function reloadScheduler(): void {
         { rule: task.cron, tz: task.timezone },
         () => {
           sendToOrchestrator(task.prompt, { type: "background" }, (_text, done) => {
-            if (done) proactiveNotify(_text, "telegram");
+            if (done) proactiveNotify(_text);
           }).catch((err) => {
             console.error(`[scheduler] Task "${task.name}" (id=${task.id}) failed:`, err);
           });
