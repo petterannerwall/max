@@ -1,7 +1,8 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { rateLimit } from "express-rate-limit";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
+import { join } from "path";
 import { randomBytes } from "crypto";
 import { sendToOrchestrator, getWorkers, cancelCurrentMessage, getLastRouteResult } from "../copilot/orchestrator.js";
 import { sendPhoto } from "../telegram/bot.js";
@@ -10,7 +11,7 @@ import { getRouterConfig, updateRouterConfig } from "../copilot/router.js";
 import { searchMemories } from "../store/db.js";
 import { listSkills, removeSkill } from "../copilot/skills.js";
 import { restartDaemon } from "../daemon.js";
-import { API_TOKEN_PATH, ensureMaxHome } from "../paths.js";
+import { API_TOKEN_PATH, ensureMaxHome, WIKI_DIR } from "../paths.js";
 
 // Ensure token file exists (generate on first run)
 let apiToken: string | null = null;
@@ -28,6 +29,7 @@ try {
 }
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "16kb" }));
 
 // 60 requests per minute per IP — generous for a personal API, prevents abuse
@@ -225,6 +227,47 @@ app.post("/auto", (req: Request, res: Response) => {
 app.get("/memory", (_req: Request, res: Response) => {
   const memories = searchMemories(undefined, undefined, 100);
   res.json(memories);
+});
+
+// List wiki pages (from index)
+app.get("/wiki", (_req: Request, res: Response) => {
+  try {
+    const indexPath = join(WIKI_DIR, 'index.md');
+    const index = existsSync(indexPath) ? readFileSync(indexPath, 'utf-8') : '';
+    const pages: Array<{path: string, title: string, preview: string}> = [];
+    function scanDir(dir: string, base: string) {
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (entry.isDirectory()) scanDir(join(dir, entry.name), base + entry.name + '/');
+          else if (entry.name.endsWith('.md')) {
+            const filePath = join(dir, entry.name);
+            const content = readFileSync(filePath, 'utf-8');
+            const titleMatch = content.match(/^#\s+(.+)$/m);
+            const preview = content.slice(0, 300).replace(/^#[^\n]*\n?/, '').trim().slice(0, 300);
+            pages.push({ path: base + entry.name, title: titleMatch ? titleMatch[1] : entry.name.replace('.md',''), preview });
+          }
+        }
+      } catch {}
+    }
+    scanDir(join(WIKI_DIR, 'pages'), 'pages/');
+    res.json({ pages, index });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// Read a specific wiki page
+app.get("/wiki/*path", (req: Request, res: Response) => {
+  try {
+    const pagePath = (req.params as Record<string, string>)["path"];
+    const filePath = join(WIKI_DIR, pagePath);
+    if (!filePath.startsWith(WIKI_DIR)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    const content = existsSync(filePath) ? readFileSync(filePath, 'utf-8') : null;
+    if (!content) { res.status(404).json({ error: 'Not found' }); return; }
+    res.json({ path: pagePath, content });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // List skills

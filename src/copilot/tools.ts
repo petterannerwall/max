@@ -559,8 +559,8 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
         appendLog("update", `remember (${args.category}): ${args.content.slice(0, 80)}`);
 
         // Also write to SQLite for backwards compat during transition
-        const id = addMemory(args.category, args.content, args.source || "user");
-        return `Remembered (wiki + #${id}, ${args.category}): "${args.content}"`;
+        // const id = addMemory(args.category, args.content, args.source || "user");
+        return `Remembered (wiki, ${args.category}): "${args.content}"`;
       },
     }),
 
