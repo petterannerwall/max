@@ -9,6 +9,8 @@ import { checkForUpdate } from "./update.js";
 import { ensureWikiStructure } from "./wiki/fs.js";
 import { shouldMigrate, migrateMemoriesToWiki } from "./wiki/migrate.js";
 import { startScheduler } from "./scheduler.js";
+import { unlinkSync, existsSync } from "fs";
+import { RESTART_REASON_PATH } from "./paths.js";
 
 function truncate(text: string, max = 200): string {
   const oneLine = text.replace(/\n/g, " ").trim();
@@ -94,8 +96,14 @@ async function main(): Promise<void> {
     .catch(() => {});  // silent — network may be unavailable
 
   // Notify user if this is a restart (not a fresh start)
-  if (config.telegramEnabled && process.env.MAX_RESTARTED === "1") {
-    await sendProactiveMessage("I'm back online 🟢").catch(() => {});
+  if (existsSync(RESTART_REASON_PATH) || process.env.MAX_RESTARTED === "1") {
+    if (existsSync(RESTART_REASON_PATH)) {
+      try { unlinkSync(RESTART_REASON_PATH); } catch { /* best effort */ }
+    }
+    broadcastToSSE("✅ Max is back online");
+    if (config.telegramEnabled) {
+      await sendProactiveMessage("✅ Max is back online").catch(() => {});
+    }
     delete process.env.MAX_RESTARTED;
   }
 }

@@ -35,6 +35,9 @@ export const WIKI_PAGES_DIR = join(WIKI_DIR, "pages");
 /** Raw ingested source documents (immutable) */
 export const WIKI_SOURCES_DIR = join(WIKI_DIR, "sources");
 
+/** Path to restart reason file (written before restart, read on boot) */
+export const RESTART_REASON_PATH = join(MAX_HOME, "restart-reason.txt");
+
 /** Ensure ~/.max/ exists */
 export function ensureMaxHome(): void {
   mkdirSync(MAX_HOME, { recursive: true });

@@ -33,8 +33,14 @@ const app = express();
 app.set("trust proxy", 1);
 app.use(express.json({ limit: "16kb" }));
 
-// 60 requests per minute per IP — generous for a personal API, prevents abuse
-const limiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false });
+// Rate limiter — skip health check endpoints, generous limit for single-user dashboard
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req: Request) => req.path === "/status",
+});
 app.use(limiter);
 
 // Bearer token authentication middleware (skip /status health check)

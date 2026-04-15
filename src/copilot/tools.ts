@@ -913,11 +913,9 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
         "or when a restart is needed to pick up configuration changes. " +
         "Spawns a new process and exits the current one.",
       parameters: z.object({
-        reason: z.string().optional().describe("Optional reason for the restart"),
+        reason: z.string().describe("Required reason for the restart — shown to user when Max comes back online"),
       }),
       handler: async (args) => {
-        const reason = args.reason ? ` (${args.reason})` : "";
-        // Dynamic import to avoid circular dependency
         const { restartDaemon } = await import("../daemon.js");
         // Schedule restart after returning the response
         setTimeout(() => {
@@ -925,7 +923,7 @@ export function createTools(deps: ToolDeps): Tool<any>[] {
             console.error("[max] Restart failed:", err);
           });
         }, 1000);
-        return `Restarting Max${reason}. I'll be back in a few seconds.`;
+        return `Restarting Max (${args.reason}). I'll be back in a few seconds.`;
       },
     }),
   ];
